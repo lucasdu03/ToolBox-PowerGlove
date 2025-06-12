@@ -44,11 +44,7 @@ const main = async () => {
         console.log('✅ Connexion à Supabase réussie.');
     }
 
-    // Utilisation d'un Set pour éviter les doublons d'URL d'articles
-    const articleUrls = new Set();
-
     for (const source of sources) {
-        // Vérification de la validité de l'URL
         if (!/^https?:\/\/[^ "]+$/.test(source.url)) {
             console.warn(`⚠️ URL invalide ignorée : ${source.url}`);
             continue;
@@ -56,62 +52,40 @@ const main = async () => {
 
         console.log(`📥 Lecture de ${source.url}`);
         try {
-            // Parsing du flux RSS
             const feed = await parser.parseURL(source.url);
             for (const item of feed.items) {
-                // Ajout de l'URL de l'article si elle est valide
-                if (item.link && /^https?:\/\/[^ "]+$/.test(item.link)) {
-                    articleUrls.add(item.link);
+                const articleUrl = item.link;
+                if (articleUrl && /^https?:\/\/[^ "]+$/.test(articleUrl)) {
+                    // Vérifie si l’URL existe déjà dans Supabase
+                    const { data: existing, error: checkError } = await supabase
+                        .from('articlesUrl')
+                        .select('url')
+                        .eq('url', articleUrl)
+                        .maybeSingle();
+
+                    if (checkError) {
+                        console.error(`❌ Erreur lors de la vérification de l'URL : ${articleUrl}`, checkError.message);
+                        continue;
+                    }
+
+                    if (!existing) {
+                        const { error: insertError } = await supabase
+                            .from('articlesUrl')
+                            .insert({ url: articleUrl });
+
+                        if (insertError) {
+                            console.error(`❌ Erreur lors de l’insertion de l’article : ${articleUrl}`, insertError.message);
+                        } else {
+                            console.log(`✅ Article inséré : ${articleUrl}`);
+                        }
+                    } else {
+                        console.log(`🔁 Article déjà présent : ${articleUrl}`);
+                    }
                 }
             }
         } catch (err) {
-            // Affichage d'un avertissement en cas d'erreur de parsing
             console.warn(`❌ Erreur lors du traitement du flux : ${source.url}`, err.message);
         }
-    }
-
-    try {
-        // Écriture des URLs d'articles collectées dans un fichier JSON
-        await fs.writeFile('articleUrls.json', JSON.stringify([...articleUrls], null, 2), 'utf-8');
-        console.log(`✅ ${articleUrls.size} URL(s) d’article enregistrée(s) dans articleUrls.json`);
-    } catch (err) {
-        // Affichage d'une erreur si l'écriture échoue
-        console.error('❌ Erreur lors de l’écriture du fichier JSON :', err);
-    }
-
-    // Envoi des données dans Supabase (table articlesUrl)
-    try {
-        // Récupérer les URLs déjà présentes en base
-        const { data: existingArticles, error: fetchError } = await supabase
-            .from('articlesUrl')
-            .select('url');
-
-        if (fetchError) {
-            console.error('❌ Erreur lors de la récupération des articles existants :', fetchError.message);
-            return;
-        }
-
-        const existingUrls = new Set(existingArticles.map(a => a.url));
-
-        // Filtrer les nouvelles URLs à insérer
-        const newUrls = [...articleUrls].filter(url => !existingUrls.has(url));
-        if (newUrls.length === 0) {
-            console.log('ℹ️ Aucune nouvelle URL à insérer.');
-            return;
-        }
-
-        const rows = newUrls.map(url => ({ url }));
-        const { error: insertError } = await supabase
-            .from('articlesUrl')
-            .upsert(rows, { onConflict: 'url' });
-
-        if (insertError) {
-            console.error('❌ Erreur lors de l’insertion Supabase :', insertError.message);
-        } else {
-            console.log(`✅ ${rows.length} article(s) inséré(s) dans Supabase (articlesUrl)`);
-        }
-    } catch (err) {
-        console.error('❌ Erreur inattendue lors de l’upsert Supabase :', err.message);
     }
 };
 
